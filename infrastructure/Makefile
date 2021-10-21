@@ -1,0 +1,3 @@
+-include _common.mk
+-include _tfstate.mk
+-include _terraform.mk

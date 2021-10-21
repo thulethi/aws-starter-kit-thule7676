@@ -1,0 +1,176 @@
+version: 2.1
+
+orbs:
+  aws-cli: circleci/aws-cli@1.4.0
+  aws-ecr: circleci/aws-ecr@6.15.3
+  aws-ecs: circleci/aws-ecs@2.0.0
+
+executors:
+  ruby_machine:
+    docker:
+      - image: circleci/ruby:2.7.2
+  node_machine:
+    docker:
+      - image: circleci/node:12.22.7
+
+commands:
+  restore_cache_yarn:
+    description: 'Loads yarn package cache'
+    steps:
+      - restore_cache:
+          name: 'Restore Yarn Package Cache'
+          keys:
+            - yarn-packages-{{ checksum "yarn.lock" }}
+  save_cache_yarn:
+    description: 'Saves yarn packages to cache'
+    steps:
+      - save_cache:
+          name: 'Save Yarn Package Cache'
+          key: yarn-packages-{{ checksum "yarn.lock" }}
+          paths:
+            - ~/.cache/yarn
+
+jobs:
+  checkout_code:
+    executor: ruby_machine
+    working_directory: ~/repo
+    steps:
+      - checkout
+      - persist_to_workspace:
+          root: ~/repo
+          paths:
+            - .
+
+  build_and_push_backend_ecr:
+    executor: ruby_machine
+    working_directory: ~/repo/backend
+    steps:
+      - attach_workspace:
+          at: ~/repo
+      - aws-ecr/build-and-push-image:
+          checkout: false
+          aws-access-key-id: AWS_ACCESS_KEY_ID
+          aws-secret-access-key: AWS_SECRET_ACCESS_KEY
+          region: AWS_REGION
+          account-url: ECR_ACCOUNT_URL
+          repo: $ECR_REPOSITORY_NAME
+          tag: '${CIRCLE_SHA1},latest'
+          profile-name: '""' #/ this orb requires --profile parameter, since we are using temporary credentials, its set as ""
+          setup-remote-docker: true
+
+  deploy_ecs:
+    executor: aws-cli/default
+    parameters:
+      aws_key_id:
+        type: env_var_name
+      aws_secret_key:
+        type: env_var_name
+      aws_region:
+        type: env_var_name
+      aws_ecr_url:
+        type: env_var_name
+      ecr_repo_name:
+        type: env_var_name
+      project_name:
+        type: env_var_name
+      environment_name:
+        type: env_var_name
+      service_name:
+        type: env_var_name
+    steps:
+      - attach_workspace:
+          at: ~/repo
+      - aws-cli/setup:
+          aws-access-key-id: << parameters.aws_key_id >>
+          aws-secret-access-key: << parameters.aws_secret_key >>
+          aws-region: << parameters.aws_region >>
+      - aws-ecs/update-task-definition:
+          family: ${<< parameters.project_name >>}-${<< parameters.environment_name >>}-${<< parameters.service_name >>}
+          container-image-name-updates: 'container=${<< parameters.project_name >>}-${<< parameters.environment_name >>}-${<< parameters.service_name >>},image-and-tag=${<< parameters.aws_ecr_url >>}/${<< parameters.project_name >>}-${<< parameters.environment_name >>}-${<< parameters.service_name >>}:${CIRCLE_SHA1}'
+      - aws-ecs/update-service:
+          family: ${<< parameters.project_name >>}-${<< parameters.environment_name >>}-${<< parameters.service_name >>}
+          cluster-name: ${<< parameters.project_name >>}-${<< parameters.environment_name >>}
+          container-image-name-updates: 'container=${<< parameters.project_name >>}-${<< parameters.environment_name >>}-${<< parameters.service_name >>},image-and-tag=${<< parameters.aws_ecr_url >>}/${<< parameters.project_name >>}-${<< parameters.environment_name >>}-${<< parameters.service_name >>}:${CIRCLE_SHA1}'
+          verify-revision-is-deployed: true
+          service-name: ${<< parameters.project_name >>}-${<< parameters.environment_name >>}-${<< parameters.service_name >>}
+
+  build_frontend_yarn:
+    executor: node_machine
+    working_directory: ~/repo/frontend
+    steps:
+      - attach_workspace:
+          at: ~/repo
+      - restore_cache_yarn
+      - run: yarn
+      - save_cache_yarn
+      - run: yarn test
+      - run:
+          name: Get var envs and build app
+          command: |
+            echo "REACT_APP_API_URL=$REACT_APP_API_URL" > .env
+            echo "REACT_APP_BACKEND_SECRET_KEY=$REACT_APP_BACKEND_SECRET_KEY" >> .env
+            yarn build
+      - persist_to_workspace:
+          root: ~/repo
+          paths:
+            - .
+
+  deploy_frontend_s3:
+    executor: aws-cli/default
+    working_directory: ~/repo/frontend
+    parameters:
+      aws_key_id:
+        type: env_var_name
+      aws_secret_key:
+        type: env_var_name
+      aws_region:
+        type: env_var_name
+      aws_bundle_bucket:
+        type: env_var_name
+      cloudfront_distribution_id:
+        type: env_var_name
+    steps:
+      - attach_workspace:
+          at: ~/repo
+      - aws-cli/setup:
+          aws-access-key-id: << parameters.aws_key_id >>
+          aws-secret-access-key: << parameters.aws_secret_key >>
+          aws-region: << parameters.aws_region >>
+      - run:
+          name: Deploy to S3
+          command: aws s3 sync build/ s3://${<< parameters.aws_bundle_bucket >>}/ --delete
+      - run:
+          name: Invalidate cloudfront distribution
+          command: aws cloudfront create-invalidation --distribution-id ${<< parameters.cloudfront_distribution_id >>} --paths "/*"
+
+workflows:
+  version: 2.1
+  build_and_deploy:
+    jobs:
+      - checkout_code
+      - build_and_push_backend_ecr:
+          requires:
+            - checkout_code
+      - build_frontend_yarn:
+          requires:
+            - checkout_code
+      - deploy_frontend_s3:
+          requires:
+            - build_frontend_yarn
+          aws_key_id: AWS_ACCESS_KEY_ID
+          aws_secret_key: AWS_SECRET_ACCESS_KEY
+          aws_region: AWS_REGION
+          aws_bundle_bucket: AWS_BUNDLE_BUCKET
+          cloudfront_distribution_id: CLOUDFRONT_DISTRIBUTION_ID
+      - deploy_ecs:
+          name: deploy_backend_beta
+          aws_ecr_url: ECR_ACCOUNT_URL
+          aws_key_id: AWS_ACCESS_KEY_ID
+          aws_secret_key: AWS_SECRET_ACCESS_KEY
+          aws_region: AWS_REGION
+          environment_name: PROJECT_ENV
+          service_name: ECS_SERVICE_NAME
+          project_name: PROJECT_NAME
+          ecr_repo_name: ECR_REPOSITORY_NAME
+          requires:
+            - build_and_push_backend_ecr

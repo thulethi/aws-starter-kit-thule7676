@@ -1,0 +1,29 @@
+# GENERAL
+project     = "CHANGE_ME"
+environment = "staging"
+
+# DNS
+zone_name          = "CHANGE_ME"
+zone_delegation_id = "CHANGE_ME"
+
+# ECS Cluster
+instance_type       = "t3.nano"
+desired_capacity    = "1"
+min_size            = "1"
+max_size            = "1"
+detailed_monitoring = true
+
+# ECS Service: Backend
+container_image            = "nginx:latest"
+task_cpu                   = 512
+task_memory                = 256
+service_web_container_port = 80
+ecs_service_name           = "backend"
+healthcheck_path           = "/health"
+backend_secret_key         = "CHANGE_ME"
+slack_webhook_url          = "CHANGE_ME"
+
+# Basic Auth
+auth_enable   = true
+auth_username = "CHANGE_ME"
+auth_password = "CHANGE_ME"

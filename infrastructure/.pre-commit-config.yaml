@@ -1,0 +1,23 @@
+repos:
+  - repo: git://github.com/antonbabenko/pre-commit-terraform
+    rev: v1.51.0 # https://github.com/antonbabenko/pre-commit-terraform/releases
+    hooks:
+      - id: terraform_fmt
+      - id: terraform_validate
+      - id: terraform_tfsec
+      - id: terraform_tflint
+        args:
+          - 'args=--deep'
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v3.1.0  # https://github.com/pre-commit/pre-commit-hooks/releases
+    hooks:
+      - id: detect-private-key
+      - id: detect-aws-credentials
+  - repo: local
+    hooks:
+      - id: terraform_providers_lock
+        name: terraform providers lock
+        description: Locks Terraform provider versions for reproducible deploy on each platform.
+        entry: /bin/bash -c 'terraform providers lock -platform=windows_amd64 -platform=darwin_amd64 -platform=linux_amd64'
+        language: script
+        files: (\.terraform\.lock\.hcl)
